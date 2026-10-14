@@ -11,6 +11,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
@@ -169,33 +171,24 @@ fun <T : Media> MediaImage(
             .combinedClickable(
                 enabled = canClick(),
                 onClick = {
-                    if (selectionState) {
-                        onItemSelect(media)
-                    } else {
-                        // Encrypted videos are played by the vault player, not the image
-                        // pipeline — prefetching would only pay a full decrypt for nothing
-                        // it can use (#1282).
-                        if (!(media.isEncrypted && media.isVideo)) {
-                            context.sketch.enqueue(
-                                ImageRequest(context, media.getUri().toString()) {
-                                    resize(width = 600, height = 600, precision = Precision.LESS_PIXELS)
-                                    setExtra("realMimeType", media.mimeType)
-                                    // Match the viewer's cache key so this prefetch stays valid
-                                    // and busts when the file changes (#1004).
-                                    setExtra(key = "mediaVersion", value = "${media.timestamp}:${media.size}")
-                                    if (media.isEncrypted) {
-                                        setExtra(key = "mediaKeyPreviewEnc", value = media.idLessKey)
-                                    }
+                    // 修改点 1：无论是否处于多选模式，点击图片本体永远直接打开查看全图！
+                    if (!(media.isEncrypted && media.isVideo)) {
+                        context.sketch.enqueue(
+                            ImageRequest(context, media.getUri().toString()) {
+                                resize(width = 600, height = 600, precision = Precision.LESS_PIXELS)
+                                setExtra("realMimeType", media.mimeType)
+                                setExtra(key = "mediaVersion", value = "${media.timestamp}:${media.size}")
+                                if (media.isEncrypted) {
+                                    setExtra(key = "mediaKeyPreviewEnc", value = media.idLessKey)
                                 }
-                            )
-                        }
-                        onMediaClick(media)
+                            }
+                        )
                     }
+                    onMediaClick(media)
                 },
-                onLongClick = if (selectionState) {
-                    null // No long click action when selection is active
-                } else {
-                    { onItemSelect(media) }
+                onLongClick = {
+                    // 长按图片随时可以切换勾选状态（首次长按进入多选模式）
+                    onItemSelect(media)
                 }
             )
             .aspectRatio(aspectRatio)
@@ -203,10 +196,6 @@ fun <T : Media> MediaImage(
     ) {
 
         val renderer = LocalMediaImageRenderer.current
-        // Stable thumbnail cache signature: invalidates only when the underlying bytes change
-        // (definedTimestamp/size) and still carries filename/mime for animated-format detection.
-        // Excludes volatile presentation fields (favorite/trashed/selection) so toggling them no
-        // longer evicts the decoded thumbnail and forces a re-decode flash (#1076).
         val thumbnailSignature = remember(
             media.id,
             media.definedTimestamp,
@@ -222,10 +211,6 @@ fun <T : Media> MediaImage(
                 .fillMaxSize()
                 .align(Alignment.Center)
                 .aspectRatio(aspectRatio)
-                // Shrink the thumbnail visually (GPU scale) instead of padding its layout.
-                // Padding changes the measured size, forcing the image loader to re-request a
-                // smaller bitmap on selection (visible flash). Scaling keeps the layout size
-                // constant so the already-decoded painter is simply resized on screen.
                 .graphicsLayer {
                     val insetPx = selectedSize.toPx()
                     val min = size.minDimension
@@ -297,7 +282,7 @@ fun <T : Media> MediaImage(
                 Settings.Misc.FAV_ICON_BOTTOM_START -> Alignment.BottomStart
                 Settings.Misc.FAV_ICON_TOP_END -> Alignment.TopEnd
                 Settings.Misc.FAV_ICON_TOP_START -> Alignment.TopStart
-                else -> Alignment.BottomEnd
+                else -> if (selectionState) Alignment.TopStart else Alignment.BottomEnd
             }
             Icon(
                 modifier = Modifier
@@ -372,7 +357,6 @@ fun <T : Media> MediaImage(
                 )
             }
         } else if (cellState?.cloudBackedUpIds?.contains(media.id) == true) {
-            // Local media that is backed up on at least one cloud provider.
             Icon(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -391,11 +375,18 @@ fun <T : Media> MediaImage(
             )
         }
 
+        // 修改点 2：将勾选框固定在右下角 (Alignment.BottomEnd)，并单独绑定点击勾选/取消勾选事件
         if (selectionState) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(4.dp)
+                    .align(Alignment.BottomEnd)
+                    .size(36.dp) // 适度扩大右下角点击热区，手指更容易点中
+                    .clip(CircleShape)
+                    .clickable(enabled = canClick()) {
+                        onItemSelect(media)
+                    }
+                    .padding(4.dp),
+                contentAlignment = Alignment.BottomEnd
             ) {
                 val number by rememberedDerivedState(isSelected, selectedMedia) {
                     if (isSelected) {
@@ -404,6 +395,11 @@ fun <T : Media> MediaImage(
                 }
                 CheckBox(
                     isChecked = isSelected,
+                    onCheck = {
+                        if (canClick()) {
+                            onItemSelect(media)
+                        }
+                    },
                     number = number
                 )
             }
